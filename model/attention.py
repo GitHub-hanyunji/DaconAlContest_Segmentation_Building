@@ -3,9 +3,46 @@ import torch.nn as nn
 import torch.nn.functional as F
 import math
 
-# --------------------------
+
+# NonLocal Attention
+class NonLocalBlock(nn.Module):
+    def __init__(self, in_channels):
+        super().__init__()
+
+        self.inter_channels = in_channels // 2
+
+        # θ, φ, g 모두 1×1 conv
+        self.theta = nn.Conv2d(in_channels, self.inter_channels, 1)
+        self.phi = nn.Conv2d(in_channels, self.inter_channels, 1)
+        self.g = nn.Conv2d(in_channels, self.inter_channels, 1)
+
+        # W_z
+        self.W_z = nn.Conv2d(self.inter_channels, in_channels, 1)
+        nn.init.constant_(self.W_z.weight, 0)
+        nn.init.constant_(self.W_z.bias, 0)
+
+    def forward(self, x):
+        B, C, H, W = x.size()
+
+        theta_x = self.theta(x).view(B, self.inter_channels, -1) # B, C/2, HW
+        phi_x = self.phi(x).view(B, self.inter_channels, -1) # B, C/2, HW
+        g_x = self.g(x).view(B, self.inter_channels, -1)  # B, C/2,
+        theta_x = theta_x.permute(0, 2, 1)  # B, HW, C/2
+
+        # Attention map: HW × HW
+        f = torch.matmul(theta_x, phi_x)    # B, HW, HW
+        f_div_C = F.softmax(f, dim=-1)
+
+        # Apply attention weights
+        y = torch.matmul(f_div_C, g_x.permute(0, 2, 1))   # B, HW, C/2
+        y = y.permute(0, 2, 1).contiguous()
+        y = y.view(B, self.inter_channels, H, W)
+
+        z = self.W_z(y) + x   # residual 연결
+        return z
+
+
 # ECA Attention 
-# --------------------------
 class ECA(nn.Module):
     def __init__(self, channels, gamma=2, b=1):
         super().__init__()
@@ -24,9 +61,8 @@ class ECA(nn.Module):
         return x * y.expand_as(x)
 
 
-# --------------------------
 # CBAM Attention 
-# --------------------------
+# Channel Attention
 class ChannelAttention(nn.Module):
     def __init__(self, in_planes, ratio=16):
         super().__init__()
@@ -45,7 +81,7 @@ class ChannelAttention(nn.Module):
         out = avg_out + max_out
         return self.sigmoid(out)
 
-
+# spatial Attention
 class SpatialAttention(nn.Module):
     def __init__(self):
         super().__init__()
@@ -70,3 +106,5 @@ class CBAM(nn.Module):
         x = x * self.channel(x)
         x = x * self.spatial(x)
         return x
+
+
